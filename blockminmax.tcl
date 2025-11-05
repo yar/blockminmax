@@ -10,6 +10,7 @@ set gotregion 0
 set gotpath 0
 set inc 1
 set fix_min 0
+set tie_lower 0
 for {set i 0} { $i < $argc} {incr i} {
   set arg [lindex $argv $i]
 	if {[regexp {^-R} $arg]} {
@@ -19,15 +20,18 @@ for {set i 0} { $i < $argc} {incr i} {
 		
 	} elseif {[regexp {^-I} $arg]} {
 		regsub {^I} $arg {} inc
-	} elseif {[regexp {^-MAX} $arg]} {
-		set find_min 0
-		set ending max
-		set preset -1e10
-	} elseif {[regexp {^-FIXMIN} $arg]} {
+    } elseif {[regexp {^-MAX} $arg]} {
+        set find_min 0
+        set ending max
+        set preset -1e10
+    } elseif {[regexp {^-FIXMIN} $arg]} {
 		# When provided, correct the min/max update logic so that in
 		# min mode we only accept smaller values and in max mode only
 		# larger values. Default behavior retains original script logic.
-		set fix_min 1
+        set fix_min 1
+    } elseif {[regexp {^-TIELOW} $arg] || [regexp {^-TIELOWER} $arg]} {
+        # When provided, break equal-distance ties toward the lower (smaller) grid value
+        set tie_lower 1
 	} elseif {[regexp {^-path} $arg] || [regexp {^-PATH} $arg]} {
 		incr i
 		set path [lindex $argv $i]
@@ -51,6 +55,7 @@ if {$gotregion && $gotpath} {
 
 
 proc findClosestValue {orderedList targetValue} {
+    global tie_lower
     set len [llength $orderedList]
     if {$len == 0} {
         return "Error: List is empty."
@@ -70,9 +75,10 @@ proc findClosestValue {orderedList targetValue} {
             set minDiff $currentDiff
             set closestValue $currentValue
         } elseif {$currentDiff == $minDiff} {
-            # If differences are equal, you might have a tie.
-            # You can add logic here to prioritize one over the other (e.g., smaller value, larger value).
-            # For simplicity, this example keeps the first one encountered with the minimum difference.
+            # Optional tie-breaking: choose the lower value when enabled
+            if {$tie_lower && $currentValue < $closestValue} {
+                set closestValue $currentValue
+            }
         }
 
         if {$currentValue < $targetValue} {
@@ -92,12 +98,18 @@ proc findClosestValue {orderedList targetValue} {
         set diffAtLow [expr {abs($targetValue - $valueAtLow)}]
         if {$diffAtLow < $minDiff} {
             set closestValue $valueAtLow
+            set minDiff $diffAtLow
+        } elseif {$tie_lower && $diffAtLow == $minDiff && $valueAtLow < $closestValue} {
+            set closestValue $valueAtLow
         }
     }
     if {$high >= 0} {
         set valueAtHigh [lindex $orderedList $high]
         set diffAtHigh [expr {abs($targetValue - $valueAtHigh)}]
         if {$diffAtHigh < $minDiff} {
+            set closestValue $valueAtHigh
+            set minDiff $diffAtHigh
+        } elseif {$tie_lower && $diffAtHigh == $minDiff && $valueAtHigh < $closestValue} {
             set closestValue $valueAtHigh
         }
     }
