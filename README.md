@@ -37,7 +37,7 @@ How the C version was made
   - Optimized build (`-O3 -flto -march=native`), progress every 1M lines, and clear errors.
 
 Build
-- From `other/`:
+- In the project directory:
   - `make` — build optimized `blockminmax`.
   - `make release` — clean + rebuild with release flags.
   - `make debug` — clean + build with debug flags.
@@ -86,3 +86,19 @@ Quick references
 Outcomes
 - Tcl vs C (Tcl‑like) now matches exactly when using `-FIXMIN` and `-TIELOW` on Tcl and `--tclround --tclfmt` on C.
 - C (GMT‑like, `--gmtbin`) matches `gmt blockmedian -E -C` (gridline registration) on the same region/increment.
+
+Tests
+- Quick unit test (runs without GMT):
+  - `make test`
+  - or `bash test_blockminmax.sh`
+- What it does
+  - Builds a tiny XYZ dataset designed to highlight the differences between modes:
+    - An out‑of‑bounds point near (0,0) within half a cell (tests clamp vs domain extension)
+    - An exact 0.5/0.5 tie (tests tie handling in default vs Tcl‑like/GMT‑like)
+    - Interior points at regular nodes
+  - Runs blockminmax.c in three modes:
+    - Default (llround + clamp), with native output formatting (no `--tclfmt`)
+    - Tcl‑like: `--tclround --tclfmt` (nearest‑node, ties to lower, Tcl number style)
+    - GMT‑like: `--gmtbin` (gridline registration mapping; node coordinates, k‑exact rounding)
+  - Sorts each output and compares to a per‑mode reference; prints PASS/FAIL and exits non‑zero on first failure.
+  - Expected: `PASS default`, `PASS tcllike`, `PASS gmtbin`, then `All tests passed`.
