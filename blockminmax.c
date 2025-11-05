@@ -46,6 +46,7 @@ typedef struct {
     bool find_min;       /* true: compute min; false: compute max */
     char *path;          /* input path */
     char *out;           /* optional output path (if NULL, path + .min/.max) */
+    bool tcl_round;      /* emulate Tcl rounding for cell snapping */
 } Options;
 
 static void die(const char *msg) {
@@ -60,7 +61,7 @@ static void die_perror(const char *msg) {
 
 static void usage(FILE *out) {
     fprintf(out,
-        "Usage: blockminmax -Rxmin/xmax/ymin/ymax [-Iinc] -PATH <file> [-MAX] [-o <outfile>]\n"
+        "Usage: blockminmax -Rxmin/xmax/ymin/ymax [-Iinc] -PATH <file> [-MAX] [-o <outfile>] [--tclround]\n"
         "\n"
         "Options:\n"
         "  -Rxmin/xmax/ymin/ymax  Region bounds (inclusive).\n"
@@ -68,6 +69,7 @@ static void usage(FILE *out) {
         "  -PATH <file>           Input XYZ file. (alias: -path)\n"
         "  -MAX                   Compute maxima instead of minima.\n"
         "  -o <outfile>           Output file (default: <file>.min or <file>.max).\n"
+        "  --tclround             Snap to grid like Tcl's findClosestValue (ties go lower).\n"
         "  -h, --help             Show this help.\n"
         "\n"
         "Notes:\n"
@@ -138,6 +140,7 @@ static Options parse_args(int argc, char **argv) {
     memset(&opt, 0, sizeof(opt));
     opt.find_min = true;
     opt.inc = 1.0;
+    opt.tcl_round = false;
 
     for (int i = 1; i < argc; ++i) {
         const char *a = argv[i];
@@ -164,6 +167,8 @@ static Options parse_args(int argc, char **argv) {
         } else if (!strcmp(a, "-o")) {
             if (i + 1 >= argc) { fprintf(stderr, "Missing value for -o\n"); exit(EXIT_FAILURE);} 
             opt.out = dupstr(argv[++i]);
+        } else if (!strcmp(a, "--tclround")) {
+            opt.tcl_round = true;
         } else if (a[0] == '-') {
             fprintf(stderr, "Unknown option: %s\n", a);
             usage(stderr);
@@ -262,8 +267,21 @@ int main(int argc, char **argv) {
         if (errno || end == p) continue;
 
         /* Map to nearest grid cell index with clamping to [0..N-1]. */
-        long long ix_ll = llround((x - opt.xmin) / inc);
-        long long iy_ll = llround((y - opt.ymin) / inc);
+        long long ix_ll, iy_ll;
+        if (!opt.tcl_round) {
+            ix_ll = llround((x - opt.xmin) / inc);
+            iy_ll = llround((y - opt.ymin) / inc);
+        } else {
+            /* Emulate Tcl's findClosestValue: choose the nearest grid value;
+               if exactly between two cells, prefer the lower (smaller coord). */
+            const double tx = (x - opt.xmin) / inc;
+            const double ty = (y - opt.ymin) / inc;
+            const double fx = floor(tx), fy = floor(ty);
+            const double fracx = tx - fx, fracy = ty - fy;
+            const double eps = 1e-12;
+            ix_ll = (long long)((fracx > 0.5 + eps) ? (fx + 1.0) : (fx));
+            iy_ll = (long long)((fracy > 0.5 + eps) ? (fy + 1.0) : (fy));
+        }
         if (ix_ll < 0) ix_ll = 0; else if ((unsigned long long)ix_ll >= nx) ix_ll = (long long)nx - 1;
         if (iy_ll < 0) iy_ll = 0; else if ((unsigned long long)iy_ll >= ny) iy_ll = (long long)ny - 1;
 
