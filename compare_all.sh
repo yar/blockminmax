@@ -52,39 +52,47 @@ cd "$SCRIPT_DIR"
 # 1) Tcl
 rm -f tcl.min
 echo "[1/6] Tcl: blockminmax.tcl ..." >&2
-tclsh ./blockminmax.tcl -R"$RVAL" -I"$INC" -PATH "$PATH_XYZ" -FIXMIN -TIELOW >/dev/null
+time tclsh ./blockminmax.tcl -R"$RVAL" -I"$INC" -PATH "$PATH_XYZ" -FIXMIN -TIELOW >/dev/null
 mv -f "${PATH_XYZ}.min" tcl.min
 
-# 2) C
+# 2) C (Tcl-like)
 rm -f c.min
-echo "[2/6] C: blockminmax ..." >&2
+echo "[2/7] C (Tcl-like): blockminmax ..." >&2
 if [[ ! -x ./blockminmax ]]; then die "./blockminmax not found; build it first (make -C other)"; fi
-./blockminmax -R"$RVAL" -I"$INC" -PATH "$PATH_XYZ" --tclround --tclfmt -o c.min >/dev/null
+time ./blockminmax -R"$RVAL" -I"$INC" -PATH "$PATH_XYZ" --tclround --tclfmt -o c.min >/dev/null
 
-# 3) GMT blockmedian (table output, min in column 5)
+# 3) C (GMT-like binning)
+rm -f c_gmtbin.min
+echo "[3/7] C (GMT-like binning): blockminmax ..." >&2
+time ./blockminmax -R"$RVAL" -I"$INC" -PATH "$PATH_XYZ" --gmtbin -o c_gmtbin.min >/dev/null
+
+# 4) GMT blockmedian (table output, min in column 5)
 rm -f gmt.min
-echo "[3/6] GMT: blockmedian ..." >&2
-gmt blockmedian "$PATH_XYZ" -R"$RVAL" -I"$INC" -E -C | awk '{printf("%.1f %.1f %s\n", $1, $2, $5)}' > gmt.min
+echo "[4/7] GMT: blockmedian ..." >&2
+time gmt blockmedian "$PATH_XYZ" -R"$RVAL" -I"$INC" -E -C | awk '{printf("%.1f %.1f %s\n", $1, $2, $5)}' > gmt.min
 
-# 4) Sort and compare
-echo "[4/6] Sorting and comparing ..." >&2
+# 5) Sort and compare
+echo "[5/7] Sorting and comparing ..." >&2
 LC_ALL=C sort tcl.min > tcl.sorted
 LC_ALL=C sort c.min   > c.sorted
+LC_ALL=C sort c_gmtbin.min > c_gmtbin.sorted
 LC_ALL=C sort gmt.min > gmt.sorted
 
 cmp -s tcl.sorted c.sorted && echo "Tcl vs C: IDENTICAL" || echo "Tcl vs C: DIFFER" 
 cmp -s tcl.sorted gmt.sorted && echo "Tcl vs GMT: IDENTICAL" || echo "Tcl vs GMT: DIFFER" 
 cmp -s c.sorted   gmt.sorted && echo "C vs GMT: IDENTICAL"   || echo "C vs GMT: DIFFER" 
+cmp -s c_gmtbin.sorted gmt.sorted && echo "C(GMTbin) vs GMT: IDENTICAL" || echo "C(GMTbin) vs GMT: DIFFER" 
 
 echo "Counts (lines):"
 printf "  tcl.sorted: %9d\n" "$(wc -l < tcl.sorted)"
 printf "  c.sorted:   %9d\n" "$(wc -l < c.sorted)"
+printf "  c_gmtbin:   %9d\n" "$(wc -l < c_gmtbin.sorted)"
 printf "  gmt.sorted: %9d\n" "$(wc -l < gmt.sorted)"
 
-# 5) Visualization (common color scale)
-echo "[5/6] Visualizing with GMT ..." >&2
+# 6) Visualization (common color scale)
+echo "[6/7] Visualizing with GMT ..." >&2
 # Compute common z-range across all outputs
-read -r ZMIN ZMAX < <(awk 'NR==1{min=$3; max=$3} {if($3<min)min=$3; if($3>max)max=$3} END{printf "%.10g %.10g\n",min,max}' tcl.min c.min gmt.min)
+read -r ZMIN ZMAX < <(awk 'NR==1{min=$3; max=$3} {if($3<min)min=$3; if($3>max)max=$3} END{printf "%.10g %.10g\n",min,max}' tcl.min c.min c_gmtbin.min gmt.min)
 echo "Common z range: $ZMIN to $ZMAX" >&2
 
 # Build a simple green-scale CPT (white -> green)
@@ -101,14 +109,15 @@ vis() {
 
 vis tcl.min tcl
 vis c.min   c
+vis c_gmtbin.min c_gmtbin
 vis gmt.min gmt
 
 # 6) Open images (macOS)
-echo "[6/6] Opening images ..." >&2
+echo "[7/7] Opening images ..." >&2
 if command -v open >/dev/null 2>&1 && [[ "$NO_OPEN" -eq 0 ]]; then
-  open tcl.png c.png gmt.png || true
+  open tcl.png c.png c_gmtbin.png gmt.png || true
 else
-  echo "open not available or suppressed; images: tcl.png c.png gmt.png" >&2
+  echo "open not available or suppressed; images: tcl.png c.png c_gmtbin.png gmt.png" >&2
 fi
 
 echo "Done."
