@@ -9,6 +9,7 @@ set preset 1e10
 set gotregion 0
 set gotpath 0
 set inc 1
+set fix_min 0
 for {set i 0} { $i < $argc} {incr i} {
   set arg [lindex $argv $i]
 	if {[regexp {^-R} $arg]} {
@@ -22,6 +23,11 @@ for {set i 0} { $i < $argc} {incr i} {
 		set find_min 0
 		set ending max
 		set preset -1e10
+	} elseif {[regexp {^-FIXMIN} $arg]} {
+		# When provided, correct the min/max update logic so that in
+		# min mode we only accept smaller values and in max mode only
+		# larger values. Default behavior retains original script logic.
+		set fix_min 1
 	} elseif {[regexp {^-path} $arg] || [regexp {^-PATH} $arg]} {
 		incr i
 		set path [lindex $argv $i]
@@ -133,10 +139,24 @@ while {[gets $fin line] >0} {
 	scan $line "%s %s %s" x y z
 	set x [findClosestValue $l_x $x]
 	set y [findClosestValue $l_y $y]
-	if {$find_min && $z < $ar($x,$y)} {
-		set ar($x,$y) $z
-	} elseif {$z > $ar($x,$y)} {
-		set ar($x,$y) $z
+	if {$fix_min} {
+		if {$find_min} {
+			if {$z < $ar($x,$y)} {
+				set ar($x,$y) $z
+			}
+		} else {
+			if {$z > $ar($x,$y)} {
+				set ar($x,$y) $z
+			}
+		}
+	} else {
+		# Original behavior: in min mode, accept smaller z, but also
+		# overwrite with larger z due to the elseif; effectively last value wins.
+		if {$find_min && $z < $ar($x,$y)} {
+			set ar($x,$y) $z
+		} elseif {$z > $ar($x,$y)} {
+			set ar($x,$y) $z
+		}
 	}
 	if {$lines == 1000000} {
 		incr Mlines
@@ -158,4 +178,3 @@ foreach x $l_x {
 	}
 }
 close $fout
-
