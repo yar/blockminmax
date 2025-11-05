@@ -58,3 +58,6 @@ install: $(PROG)
 uninstall:
 	$(RM) $(BIN_DIR)/$(PROG)
 
+.PHONY: compare
+compare: $(PROG)
+	bash ./compare_all.sh -R1585520.5/1587224.5/5464422.5/5467728.5 -I1 -P test.xyz || true
