@@ -48,6 +48,7 @@ typedef struct {
     char *out;           /* optional output path (if NULL, path + .min/.max) */
     bool tcl_round;      /* emulate Tcl rounding for cell snapping */
     bool tcl_fmt;        /* format output like Tcl script (x,y %.1f and z token as text) */
+    bool gmt_bin;        /* emulate GMT block assignment: floor-based, skip outside region */
 } Options;
 
 static void die(const char *msg) {
@@ -62,7 +63,7 @@ static void die_perror(const char *msg) {
 
 static void usage(FILE *out) {
     fprintf(out,
-        "Usage: blockminmax -Rxmin/xmax/ymin/ymax [-Iinc] -PATH <file> [-MAX] [-o <outfile>] [--tclround] [--tclfmt]\n"
+        "Usage: blockminmax -Rxmin/xmax/ymin/ymax [-Iinc] -PATH <file> [-MAX] [-o <outfile>] [--tclround] [--tclfmt] [--gmtbin]\n"
         "\n"
         "Options:\n"
         "  -Rxmin/xmax/ymin/ymax  Region bounds (inclusive).\n"
@@ -72,6 +73,7 @@ static void usage(FILE *out) {
         "  -o <outfile>           Output file (default: <file>.min or <file>.max).\n"
         "  --tclround             Snap to grid like Tcl's findClosestValue (ties go lower).\n"
         "  --tclfmt               Format like Tcl script: x,y as %%.1f; z as original token.\n"
+        "  --gmtbin               Assign bins like GMT blockmedian: floor((x-xmin)/inc), drop outside -R.\n"
         "  -h, --help             Show this help.\n"
         "\n"
         "Notes:\n"
@@ -144,6 +146,7 @@ static Options parse_args(int argc, char **argv) {
     opt.inc = 1.0;
     opt.tcl_round = false;
     opt.tcl_fmt = false;
+    opt.gmt_bin = false;
 
     for (int i = 1; i < argc; ++i) {
         const char *a = argv[i];
@@ -174,6 +177,8 @@ static Options parse_args(int argc, char **argv) {
             opt.tcl_round = true;
         } else if (!strcmp(a, "--tclfmt")) {
             opt.tcl_fmt = true;
+        } else if (!strcmp(a, "--gmtbin")) {
+            opt.gmt_bin = true;
         } else if (a[0] == '-') {
             fprintf(stderr, "Unknown option: %s\n", a);
             usage(stderr);
@@ -222,13 +227,23 @@ int main(int argc, char **argv) {
 
     const double inc = opt.inc;
 
-    /* Compute grid dimensions (inclusive bounds). We round the step count to the nearest integer. */
-    const double nx_d = floor(((opt.xmax - opt.xmin) / inc) + 0.5) + 1.0;
-    const double ny_d = floor(((opt.ymax - opt.ymin) / inc) + 0.5) + 1.0;
-
-    if (!(nx_d >= 1.0 && ny_d >= 1.0)) die("Computed grid dimensions invalid");
-    const size_t nx = (size_t)nx_d;
-    const size_t ny = (size_t)ny_d;
+    /* Compute grid dimensions. For normal (node-snapped) mode we keep node counts.
+       For GMT-bin mode, emulate GMT gridline registration node counts. */
+    size_t nx, ny;
+    if (!opt.gmt_bin) {
+        const double nx_d = floor(((opt.xmax - opt.xmin) / inc) + 0.5) + 1.0;
+        const double ny_d = floor(((opt.ymax - opt.ymin) / inc) + 0.5) + 1.0;
+        if (!(nx_d >= 1.0 && ny_d >= 1.0)) die("Computed grid dimensions invalid");
+        nx = (size_t)nx_d;
+        ny = (size_t)ny_d;
+    } else {
+        /* Node counts: n = urint(((max-min)/inc) + 1) */
+        double nxd = llround(((opt.xmax - opt.xmin) / inc)) + 1.0;
+        double nyd = llround(((opt.ymax - opt.ymin) / inc)) + 1.0;
+        if (!(nxd >= 1.0 && nyd >= 1.0)) die("Computed bin dimensions invalid");
+        nx = (size_t)nxd;
+        ny = (size_t)nyd;
+    }
 
     fprintf(stderr, "%zu columns by %zu rows\n", nx, ny);
 
@@ -279,9 +294,19 @@ int main(int argc, char **argv) {
         errno = 0; double z = strtod(p, &end);
         if (errno || end == p) continue;
 
-        /* Map to nearest grid cell index with clamping to [0..N-1]. */
+        /* Map to grid cell index according to selected policy. */
         long long ix_ll, iy_ll;
-        if (!opt.tcl_round) {
+        if (opt.gmt_bin) {
+            /* GMT gridline registration mapping using lrint rounding macros:
+               col = irint(((x - xmin)/inc) - off) with off=0; row = n_rows-1 - irint(((y - ymin)/inc) - off). */
+            long long col_ll = (long long)lrint(((x - opt.xmin) / inc));
+            long long row_ll = (long long)((long long)ny - 1 - lrint(((y - opt.ymin) / inc)));
+            if (col_ll < 0 || (unsigned long long)col_ll >= nx || row_ll < 0 || (unsigned long long)row_ll >= ny) {
+                continue; /* Skip points outside region */
+            }
+            ix_ll = col_ll;
+            iy_ll = row_ll;
+        } else if (!opt.tcl_round) {
             ix_ll = llround((x - opt.xmin) / inc);
             iy_ll = llround((y - opt.ymin) / inc);
         } else {
@@ -294,9 +319,9 @@ int main(int argc, char **argv) {
             const double eps = 1e-12;
             ix_ll = (long long)((fracx > 0.5 + eps) ? (fx + 1.0) : (fx));
             iy_ll = (long long)((fracy > 0.5 + eps) ? (fy + 1.0) : (fy));
+            if (ix_ll < 0) ix_ll = 0; else if ((unsigned long long)ix_ll >= nx) ix_ll = (long long)nx - 1;
+            if (iy_ll < 0) iy_ll = 0; else if ((unsigned long long)iy_ll >= ny) iy_ll = (long long)ny - 1;
         }
-        if (ix_ll < 0) ix_ll = 0; else if ((unsigned long long)ix_ll >= nx) ix_ll = (long long)nx - 1;
-        if (iy_ll < 0) iy_ll = 0; else if ((unsigned long long)iy_ll >= ny) iy_ll = (long long)ny - 1;
 
         size_t ix = (size_t)ix_ll;
         size_t iy = (size_t)iy_ll;
@@ -350,10 +375,20 @@ int main(int argc, char **argv) {
         for (size_t ix = 0; ix < nx; ++ix) {
             size_t idx = ix + nx * iy;
             if (!hit[idx]) continue;
-            double gx = opt.xmin + (double)ix * inc;
-            double gy = opt.ymin + (double)iy * inc;
+            double gx, gy;
+            if (opt.gmt_bin) {
+                /* Node coordinate for (row=iy, col=ix) under gridline registration */
+                gx = opt.xmin + (double)ix * inc;
+                gy = opt.ymax - (double)iy * inc;
+            } else {
+                gx = opt.xmin + (double)ix * inc;
+                gy = opt.ymin + (double)iy * inc;
+            }
             double gz = grid[idx];
-            if (!opt.tcl_fmt) {
+            if (opt.gmt_bin) {
+                /* Match GMT table formatting expectation in compare script: x,y %.1f, z numeric */
+                fprintf(fout, "%.1f %.1f %.10g\n", gx, gy, gz);
+            } else if (!opt.tcl_fmt) {
                 /* Compact formatting */
                 fprintf(fout, "%.10g %.10g %.10g\n", gx, gy, gz);
             } else {
