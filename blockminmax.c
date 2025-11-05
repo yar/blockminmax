@@ -309,6 +309,8 @@ int main(int argc, char **argv) {
         } else if (!opt.tcl_round) {
             ix_ll = llround((x - opt.xmin) / inc);
             iy_ll = llround((y - opt.ymin) / inc);
+            if (ix_ll < 0) ix_ll = 0; else if ((unsigned long long)ix_ll >= nx) ix_ll = (long long)nx - 1;
+            if (iy_ll < 0) iy_ll = 0; else if ((unsigned long long)iy_ll >= ny) iy_ll = (long long)ny - 1;
         } else {
             /* Emulate Tcl's findClosestValue: choose the nearest grid value;
                if exactly between two cells, prefer the lower (smaller coord). */
