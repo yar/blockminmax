@@ -47,6 +47,7 @@ typedef struct {
     char *path;          /* input path */
     char *out;           /* optional output path (if NULL, path + .min/.max) */
     bool tcl_round;      /* emulate Tcl rounding for cell snapping */
+    bool tcl_fmt;        /* format output like Tcl script (x,y %.1f and z token as text) */
 } Options;
 
 static void die(const char *msg) {
@@ -61,7 +62,7 @@ static void die_perror(const char *msg) {
 
 static void usage(FILE *out) {
     fprintf(out,
-        "Usage: blockminmax -Rxmin/xmax/ymin/ymax [-Iinc] -PATH <file> [-MAX] [-o <outfile>] [--tclround]\n"
+        "Usage: blockminmax -Rxmin/xmax/ymin/ymax [-Iinc] -PATH <file> [-MAX] [-o <outfile>] [--tclround] [--tclfmt]\n"
         "\n"
         "Options:\n"
         "  -Rxmin/xmax/ymin/ymax  Region bounds (inclusive).\n"
@@ -70,6 +71,7 @@ static void usage(FILE *out) {
         "  -MAX                   Compute maxima instead of minima.\n"
         "  -o <outfile>           Output file (default: <file>.min or <file>.max).\n"
         "  --tclround             Snap to grid like Tcl's findClosestValue (ties go lower).\n"
+        "  --tclfmt               Format like Tcl script: x,y as %%.1f; z as original token.\n"
         "  -h, --help             Show this help.\n"
         "\n"
         "Notes:\n"
@@ -141,6 +143,7 @@ static Options parse_args(int argc, char **argv) {
     opt.find_min = true;
     opt.inc = 1.0;
     opt.tcl_round = false;
+    opt.tcl_fmt = false;
 
     for (int i = 1; i < argc; ++i) {
         const char *a = argv[i];
@@ -169,6 +172,8 @@ static Options parse_args(int argc, char **argv) {
             opt.out = dupstr(argv[++i]);
         } else if (!strcmp(a, "--tclround")) {
             opt.tcl_round = true;
+        } else if (!strcmp(a, "--tclfmt")) {
+            opt.tcl_fmt = true;
         } else if (a[0] == '-') {
             fprintf(stderr, "Unknown option: %s\n", a);
             usage(stderr);
@@ -234,6 +239,11 @@ int main(int argc, char **argv) {
     if (!grid) die("Out of memory allocating grid");
     unsigned char *hit = (unsigned char*)calloc(ncell, sizeof(unsigned char));
     if (!hit) die("Out of memory allocating hit mask");
+    char **grid_str = NULL;
+    if (opt.tcl_fmt) {
+        grid_str = (char**)calloc(ncell, sizeof(char*));
+        if (!grid_str) die("Out of memory allocating string grid");
+    }
 
     const double preset = opt.find_min ? INFINITY : -INFINITY;
     for (size_t i = 0; i < ncell; ++i) grid[i] = preset;
@@ -263,6 +273,9 @@ int main(int argc, char **argv) {
         if (errno || end == p) continue;
 
         p = end;
+        /* Capture z token string (trim leading spaces) when needed */
+        const char *p_z_token = p;
+        while (*p_z_token == ' ' || *p_z_token == '\t') ++p_z_token;
         errno = 0; double z = strtod(p, &end);
         if (errno || end == p) continue;
 
@@ -290,9 +303,36 @@ int main(int argc, char **argv) {
         size_t idx = ix + (size_t)nx * iy;
 
         if (opt.find_min) {
-            if (!hit[idx] || z < grid[idx]) grid[idx] = z;
+            if (!hit[idx] || z < grid[idx]) {
+                grid[idx] = z;
+                if (grid_str) {
+                    size_t tok_len = (size_t)(end - p_z_token);
+                    /* trim trailing spaces/newlines from token if any */
+                    while (tok_len > 0 && (p_z_token[tok_len-1] == '\r' || p_z_token[tok_len-1] == '\n' || p_z_token[tok_len-1] == '\t' || p_z_token[tok_len-1] == ' '))
+                        --tok_len;
+                    char *s = (char*)malloc(tok_len + 1);
+                    if (!s) die("Out of memory duplicating token");
+                    memcpy(s, p_z_token, tok_len);
+                    s[tok_len] = '\0';
+                    if (grid_str[idx]) free(grid_str[idx]);
+                    grid_str[idx] = s;
+                }
+            }
         } else {
-            if (!hit[idx] || z > grid[idx]) grid[idx] = z;
+            if (!hit[idx] || z > grid[idx]) {
+                grid[idx] = z;
+                if (grid_str) {
+                    size_t tok_len = (size_t)(end - p_z_token);
+                    while (tok_len > 0 && (p_z_token[tok_len-1] == '\r' || p_z_token[tok_len-1] == '\n' || p_z_token[tok_len-1] == '\t' || p_z_token[tok_len-1] == ' '))
+                        --tok_len;
+                    char *s = (char*)malloc(tok_len + 1);
+                    if (!s) die("Out of memory duplicating token");
+                    memcpy(s, p_z_token, tok_len);
+                    s[tok_len] = '\0';
+                    if (grid_str[idx]) free(grid_str[idx]);
+                    grid_str[idx] = s;
+                }
+            }
         }
         hit[idx] = 1;
 
@@ -313,13 +353,26 @@ int main(int argc, char **argv) {
             double gx = opt.xmin + (double)ix * inc;
             double gy = opt.ymin + (double)iy * inc;
             double gz = grid[idx];
-            /* Use compact formatting; enough precision for most DEM/LiDAR uses */
-            fprintf(fout, "%.10g %.10g %.10g\n", gx, gy, gz);
+            if (!opt.tcl_fmt) {
+                /* Compact formatting */
+                fprintf(fout, "%.10g %.10g %.10g\n", gx, gy, gz);
+            } else {
+                if (grid_str && grid_str[idx]) {
+                    fprintf(fout, "%.1f %.1f %s\n", gx, gy, grid_str[idx]);
+                } else {
+                    /* Fallback if no token stored (shouldn't happen) */
+                    fprintf(fout, "%.1f %.1f %.10g\n", gx, gy, gz);
+                }
+            }
         }
     }
 
     fclose(fout);
     fclose(fin);
+    if (grid_str) {
+        for (size_t i = 0; i < ncell; ++i) free(grid_str[i]);
+        free(grid_str);
+    }
     free(hit);
     free(grid);
     free(opt.path);
